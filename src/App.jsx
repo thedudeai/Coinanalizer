@@ -165,9 +165,8 @@ function Histogram({ prices }) {
 
 // ── Analyze Tab ───────────────────────────────────────────────────────────────
 function AnalyzeTab({ log, setLog, onAuthExpired }) {
-  const [image, setImage] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [mediaType, setMediaType] = useState("image/jpeg");
+  const [front, setFront] = useState(null); // { base64, mediaType, preview }
+  const [back, setBack] = useState(null);   // { base64, mediaType, preview }
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -178,14 +177,12 @@ function AnalyzeTab({ log, setLog, onAuthExpired }) {
   const [ebayLoading, setEbayLoading] = useState(false);
   const [ebayError, setEbayError] = useState(null);
 
-  const handleFile = useCallback(async (file) => {
+  const handleFile = useCallback(async (slot, file) => {
     if (!file) return;
     setError(null);
     try {
-      const { base64, mediaType: mt, preview: p } = await fileToResizedBase64(file);
-      setMediaType(mt);
-      setPreview(p);
-      setImage(base64);
+      const img = await fileToResizedBase64(file);
+      (slot === "front" ? setFront : setBack)(img);
       setResult(null);
       setSaved(false);
       setEbayData(null);
@@ -196,7 +193,10 @@ function AnalyzeTab({ log, setLog, onAuthExpired }) {
   }, []);
 
   const analyze = async () => {
-    if (!image) return;
+    const images = [front, back]
+      .filter(Boolean)
+      .map((i) => ({ data: i.base64, mediaType: i.mediaType }));
+    if (images.length === 0) return;
     setLoading(true);
     setError(null);
     setResult(null);
@@ -206,7 +206,7 @@ function AnalyzeTab({ log, setLog, onAuthExpired }) {
       const r = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image, mediaType }),
+        body: JSON.stringify({ images }),
       });
       if (r.status === 401) { onAuthExpired?.(); throw new Error("Your session expired. Please log in again."); }
       const data = await r.json();
@@ -251,7 +251,7 @@ function AnalyzeTab({ log, setLog, onAuthExpired }) {
       confidence: result.confidence,
       status: "Unchecked",
       notes,
-      preview,
+      preview: front?.preview ?? back?.preview ?? null,
       ebayMedian: ebayData?.median ?? null,
       ebayAvg: ebayData?.avg ?? null,
       ebayCount: ebayData?.count ?? null,
@@ -265,18 +265,29 @@ function AnalyzeTab({ log, setLog, onAuthExpired }) {
     <div style={S.body}>
       {/* Upload */}
       <div style={S.card}>
-        <div style={S.sectionTitle}>📷 Upload Coin Photo</div>
-        <label style={{ display:"block", cursor:"pointer" }}>
-          <input type="file" accept="image/*" capture="environment" style={{ display:"none" }}
-            onChange={e => handleFile(e.target.files[0])} />
-          <div style={{ border:"2px dashed #333", borderRadius:10, padding:20, textAlign:"center", background:"#111", color:"#888", fontSize:14 }}>
-            {preview
-              ? <img src={preview} alt="coin" style={{ maxHeight:220, maxWidth:"100%", borderRadius:8, objectFit:"contain" }} />
-              : "📁 Tap to choose or capture a coin photo"}
-          </div>
-        </label>
-        <button style={{ ...S.btn(), marginTop:12, width:"100%", opacity: loading||!image?0.6:1 }}
-          onClick={analyze} disabled={loading || !image}>
+        <div style={S.sectionTitle}>📷 Upload Coin Photos</div>
+        <div style={{ fontSize:12, color:"#777", marginBottom:10 }}>
+          Add the front (obverse) and back (reverse) for the most accurate identification. The back is optional but strongly recommended.
+        </div>
+        <div style={S.grid2}>
+          {[
+            ["front", "Front (Obverse)", front],
+            ["back", "Back (Reverse)", back],
+          ].map(([slot, label, img]) => (
+            <label key={slot} style={{ display:"block", cursor:"pointer" }}>
+              <div style={{ fontSize:11, color:"#888", marginBottom:4 }}>{label}</div>
+              <input type="file" accept="image/*" capture="environment" style={{ display:"none" }}
+                onChange={e => handleFile(slot, e.target.files[0])} />
+              <div style={{ border:"2px dashed #333", borderRadius:10, padding:12, textAlign:"center", background:"#111", color:"#888", fontSize:13, minHeight:130, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                {img
+                  ? <img src={img.preview} alt={label} style={{ maxHeight:160, maxWidth:"100%", borderRadius:8, objectFit:"contain" }} />
+                  : "📁 Tap to add photo"}
+              </div>
+            </label>
+          ))}
+        </div>
+        <button style={{ ...S.btn(), marginTop:12, width:"100%", opacity: loading||!(front||back)?0.6:1 }}
+          onClick={analyze} disabled={loading || !(front || back)}>
           {loading ? "Analyzing…" : "🔍 Identify & Value Coin"}
         </button>
         {error && <p style={{ color:"#ff6b6b", fontSize:13, marginTop:8 }}>{error}</p>}

@@ -10,12 +10,21 @@ export default async function handler(req, res) {
   }
   if (!isAuthed(req)) return res.status(401).json({ error: "Unauthorized" });
 
-  const { image, mediaType } = req.body || {};
-  if (!image) return res.status(400).json({ error: "No image provided" });
   if (!process.env.ANTHROPIC_API_KEY)
     return res.status(500).json({ error: "Server is not configured with an API key" });
 
+  // Accept multiple images (front/back) via `images`, or a single legacy `image`.
+  const { images, image, mediaType } = req.body || {};
+  let imgs = Array.isArray(images) ? images : image ? [{ data: image, mediaType }] : [];
+  imgs = imgs.filter((i) => i && i.data).slice(0, 4);
+  if (imgs.length === 0) return res.status(400).json({ error: "No image provided" });
+
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+  const imageBlocks = imgs.map((i) => ({
+    type: "image",
+    source: { type: "base64", media_type: i.mediaType || "image/jpeg", data: i.data },
+  }));
 
   try {
     const message = await client.messages.create({
@@ -25,13 +34,10 @@ export default async function handler(req, res) {
         {
           role: "user",
           content: [
-            {
-              type: "image",
-              source: { type: "base64", media_type: mediaType || "image/jpeg", data: image },
-            },
+            ...imageBlocks,
             {
               type: "text",
-              text: `You are an expert numismatist. Analyze this coin photo and return ONLY a JSON object with no markdown, no explanation, just raw JSON.
+              text: `You are an expert numismatist. You are given ${imgs.length === 1 ? "a photo" : `${imgs.length} photos`} of the SAME coin (typically the front/obverse and back/reverse). Use all provided views together to identify it. Return ONLY a JSON object with no markdown, no explanation, just raw JSON.
 
 {
   "name": "Full coin name (e.g. 1921 Morgan Silver Dollar)",
