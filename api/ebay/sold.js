@@ -1,3 +1,5 @@
+import { isAuthed } from "../../lib/auth.js";
+
 // Vercel serverless function: GET /api/ebay/sold?q=<query>
 // Fetches eBay SOLD listings for a coin query and returns parsed price data.
 export default async function handler(req, res) {
@@ -5,6 +7,7 @@ export default async function handler(req, res) {
     res.setHeader("Allow", "GET");
     return res.status(405).json({ error: "Method not allowed" });
   }
+  if (!isAuthed(req)) return res.status(401).json({ error: "Unauthorized" });
 
   const { q } = req.query;
   if (!q) return res.status(400).json({ error: "Missing query parameter q" });

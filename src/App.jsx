@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const S = {
@@ -164,7 +164,7 @@ function Histogram({ prices }) {
 }
 
 // ── Analyze Tab ───────────────────────────────────────────────────────────────
-function AnalyzeTab({ log, setLog }) {
+function AnalyzeTab({ log, setLog, onAuthExpired }) {
   const [image, setImage] = useState(null);
   const [preview, setPreview] = useState(null);
   const [mediaType, setMediaType] = useState("image/jpeg");
@@ -208,6 +208,7 @@ function AnalyzeTab({ log, setLog }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image, mediaType }),
       });
+      if (r.status === 401) { onAuthExpired?.(); throw new Error("Your session expired. Please log in again."); }
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || "Analysis failed");
       setResult(data);
@@ -225,6 +226,7 @@ function AnalyzeTab({ log, setLog }) {
     setEbayError(null);
     try {
       const r = await fetch(`/api/ebay/sold?q=${encodeURIComponent(ebayQuery)}`);
+      if (r.status === 401) { onAuthExpired?.(); throw new Error("Your session expired. Please log in again."); }
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || "eBay fetch failed");
       setEbayData(data);
@@ -577,19 +579,149 @@ function SummaryTab({ log }) {
   );
 }
 
+// ── Login Screen ──────────────────────────────────────────────────────────────
+function LoginScreen({ onAuthed }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!password) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || "Login failed");
+      onAuthed();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ ...S.app, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+      <form onSubmit={submit} style={{ ...S.card, width:"100%", maxWidth:360, marginBottom:0 }}>
+        <div style={{ textAlign:"center", marginBottom:18 }}>
+          <div style={{ fontSize:40 }}>🪙</div>
+          <h1 style={{ ...S.headerTitle, fontSize:20, marginTop:6 }}>Coin Collection Analyzer</h1>
+          <p style={{ ...S.headerSub, marginTop:4 }}>Enter the password to continue</p>
+        </div>
+        <label style={S.label} htmlFor="pw">Password</label>
+        <input id="pw" type="password" autoFocus value={password}
+          onChange={e => setPassword(e.target.value)} style={S.input} placeholder="••••••••" />
+        {error && <p style={{ color:"#ff6b6b", fontSize:13, marginTop:10, marginBottom:0 }}>{error}</p>}
+        <button type="submit" disabled={busy || !password}
+          style={{ ...S.btn(), marginTop:16, width:"100%", opacity: busy||!password?0.6:1 }}>
+          {busy ? "Signing in…" : "🔓 Sign In"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// Strip the (unused-in-list) base64 thumbnail before persisting so the stored
+// collection stays small.
+const stripPreviews = (items) => items.map(({ preview, ...rest }) => rest);
+
 // ── Root App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("analyze");
   const [log, setLog] = useState([]);
+  // auth.status: "loading" | "needsLogin" | "ready"
+  const [auth, setAuth] = useState({ status: "loading", loginConfigured: false });
+  const [persistMode, setPersistMode] = useState("local"); // "server" | "local"
+  const hydrated = useRef(false);
+
+  // Check auth state on load.
+  useEffect(() => {
+    fetch("/api/me")
+      .then(r => r.json())
+      .then(d => setAuth({ status: d.authed ? "ready" : "needsLogin", loginConfigured: d.loginConfigured }))
+      .catch(() => setAuth({ status: "ready", loginConfigured: false })); // fail open — never lock out on a network blip
+  }, []);
+
+  // Load the saved collection once authenticated (server if configured, else localStorage).
+  useEffect(() => {
+    if (auth.status !== "ready") return;
+    let cancelled = false;
+    const loadLocal = () => {
+      try { return JSON.parse(localStorage.getItem("coin-collection") || "[]"); }
+      catch { return []; }
+    };
+    (async () => {
+      try {
+        const r = await fetch("/api/collection");
+        if (r.status === 401) { if (!cancelled) setAuth(a => ({ ...a, status: "needsLogin" })); return; }
+        const d = await r.json();
+        if (cancelled) return;
+        if (d.persisted && Array.isArray(d.items)) { setLog(d.items); setPersistMode("server"); }
+        else { setLog(loadLocal()); setPersistMode("local"); }
+      } catch {
+        if (!cancelled) { setLog(loadLocal()); setPersistMode("local"); }
+      } finally {
+        if (!cancelled) hydrated.current = true;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [auth.status]);
+
+  // Persist the collection whenever it changes (after the initial load).
+  useEffect(() => {
+    if (auth.status !== "ready" || !hydrated.current) return;
+    const payload = stripPreviews(log);
+    try { localStorage.setItem("coin-collection", JSON.stringify(payload)); } catch { /* quota */ }
+    if (persistMode === "server") {
+      fetch("/api/collection", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: payload }),
+      }).then(r => { if (r.status === 401) setAuth(a => ({ ...a, status: "needsLogin" })); }).catch(() => {});
+    }
+  }, [log, auth.status, persistMode]);
+
+  const logout = async () => {
+    try { await fetch("/api/logout", { method: "POST" }); } catch { /* ignore */ }
+    hydrated.current = false;
+    setLog([]);
+    setAuth(a => ({ ...a, status: "needsLogin" }));
+  };
+
+  const onAuthed = () => {
+    hydrated.current = false;
+    setAuth(a => ({ ...a, status: "ready" }));
+  };
+
+  if (auth.status === "loading") {
+    return (
+      <div style={{ ...S.app, display:"flex", alignItems:"center", justifyContent:"center", color:"#888" }}>
+        Loading…
+      </div>
+    );
+  }
+  if (auth.status === "needsLogin") {
+    return <LoginScreen onAuthed={onAuthed} />;
+  }
 
   return (
     <div style={S.app}>
-      <div style={S.header}>
-        <span style={{ fontSize:28 }}>🪙</span>
-        <div>
-          <h1 style={S.headerTitle}>Coin Collection Analyzer</h1>
-          <p style={S.headerSub}>AI Identification · Live eBay Market Prices · Collection Management</p>
+      <div style={{ ...S.header, justifyContent:"space-between" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <span style={{ fontSize:28 }}>🪙</span>
+          <div>
+            <h1 style={S.headerTitle}>Coin Collection Analyzer</h1>
+            <p style={S.headerSub}>AI Identification · Live eBay Market Prices · Collection Management</p>
+          </div>
         </div>
+        {auth.loginConfigured && (
+          <button style={S.btnSm("#2a2a2a")} onClick={logout} title="Sign out">⎋ Log out</button>
+        )}
       </div>
 
       <div style={S.tabs}>
@@ -598,7 +730,7 @@ export default function App() {
         ))}
       </div>
 
-      {tab === "analyze" && <AnalyzeTab log={log} setLog={setLog} />}
+      {tab === "analyze" && <AnalyzeTab log={log} setLog={setLog} onAuthExpired={() => setAuth(a => ({ ...a, status: "needsLogin" }))} />}
       {tab === "log" && <LogTab log={log} setLog={setLog} />}
       {tab === "summary" && <SummaryTab log={log} />}
     </div>

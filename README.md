@@ -15,6 +15,12 @@ backend — one-click deployable to Vercel.
 - **Collection Log** — save coins, track status (Unchecked → Checked → Sent for Grading → Sold),
   edit notes, export to CSV, and print.
 - **Summary** — collection stats, status breakdown, top coins by value, and grading flags.
+- **Optional password login** — gate the whole app behind a shared password (set two
+  env vars to enable it). The login also protects the `/api/*` endpoints so nobody can
+  use your Anthropic API key by calling them directly.
+- **Optional server-side collection** — persist the saved coins to a Redis/KV store so
+  they survive across devices and sessions (falls back to per-browser localStorage when
+  no store is configured).
 
 > Photos are downscaled in the browser before upload (to ~1280px JPEG) so requests stay well
 > under Vercel's serverless body limit and image-token costs stay low.
@@ -24,9 +30,16 @@ backend — one-click deployable to Vercel.
 ```
 coin-analyzer/
 ├── api/                  ← Vercel serverless functions
-│   ├── analyze.js        ← POST /api/analyze  (Claude coin identification)
-│   ├── ebay/sold.js      ← GET  /api/ebay/sold (eBay sold-listings scraper)
-│   └── health.js         ← GET  /api/health   (liveness / config check)
+│   ├── analyze.js        ← POST /api/analyze     (Claude coin identification)
+│   ├── ebay/sold.js      ← GET  /api/ebay/sold   (eBay sold-listings scraper)
+│   ├── login.js          ← POST /api/login       (password -> session cookie)
+│   ├── logout.js         ← POST /api/logout
+│   ├── me.js             ← GET  /api/me          (auth state)
+│   ├── collection.js     ← GET/PUT /api/collection (server-side saved coins)
+│   └── health.js         ← GET  /api/health      (liveness / config check)
+├── lib/                  ← shared helpers used by the functions (not bundled into the SPA)
+│   ├── auth.js           ← HMAC-signed session cookie
+│   └── store.js          ← Upstash Redis collection store
 ├── src/
 │   ├── App.jsx           ← Full UI (Analyze / Log / Summary tabs)
 │   └── main.jsx
@@ -73,9 +86,30 @@ vercel dev                      # serves app + /api on http://localhost:3000
 
 ## Configuration
 
-| Variable            | Where                          | Purpose                                  |
-| ------------------- | ------------------------------ | ---------------------------------------- |
-| `ANTHROPIC_API_KEY` | Vercel env vars / `.env.local` | Authenticates the coin-identification call |
+| Variable                                  | Required | Purpose                                                            |
+| ----------------------------------------- | -------- | ----------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`                       | Yes      | Authenticates the coin-identification call                        |
+| `APP_PASSWORD`                            | No       | Shared login password. Set with `AUTH_SECRET` to enable the gate. |
+| `AUTH_SECRET`                             | No       | Secret that signs the session cookie (`openssl rand -hex 32`).    |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN`   | No       | Redis/KV store for server-side collection persistence. The Vercel |
+| (or `UPSTASH_REDIS_REST_URL` / `_TOKEN`)  |          | Redis/Upstash integration injects these automatically.            |
+
+### Enabling login
+
+1. Pick a password and generate a signing secret: `openssl rand -hex 32`.
+2. In Vercel → **Settings → Environment Variables**, add `APP_PASSWORD` and `AUTH_SECRET`
+   (Production + Preview + Development).
+3. Redeploy. The app now shows a login screen and the `/api/*` endpoints require the session.
+
+> Set **both** vars or neither. With neither set, the app runs open (no login) — so it never
+> locks you out before you've configured it.
+
+### Enabling cross-device collection persistence
+
+1. In Vercel → **Storage**, create a **Redis** (Upstash) store and connect it to the project.
+   The connection env vars are injected automatically.
+2. Redeploy. Saved coins now persist server-side; until then they live in the browser's
+   localStorage.
 
 ## Notes & troubleshooting
 
