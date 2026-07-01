@@ -118,4 +118,9 @@ vercel dev                      # serves app + /api on http://localhost:3000
 - **eBay returns 0 results** — broaden the search (e.g. just coin name + year, drop the grade).
 - **eBay fetch fails** — eBay occasionally rate-limits/blocks scraping from cloud IPs; wait a
   minute and retry, or edit the query.
-- The collection log lives in browser memory for the session (no database) — export to CSV to keep it.
+- **Photos are analyzed, then forgotten.** The full-resolution image is sent to the model for
+  identification only and dropped from memory as soon as the result comes back. Coins are logged
+  by their data and a stable **Coin ID** — no image is ever stored in the log — so the collection
+  stays small and won't run a phone's browser out of memory no matter how many coins you scan.
+- The collection log lives in browser memory for the session (persisted to localStorage, or
+  server-side Redis when configured) — export to CSV to keep a permanent copy.
