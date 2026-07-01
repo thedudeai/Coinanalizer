@@ -34,7 +34,12 @@ const fmt = (n) => n != null ? `$${Number(n).toLocaleString("en-US", { minimumFr
 // serverless request bodies at ~4.5 MB and raw phone photos easily exceed that
 // once base64-encoded; a 1280px JPEG keeps us well under the limit and cuts the
 // model's image-token cost without hurting identification accuracy.
-function fileToResizedBase64(file, maxDim = 1280, quality = 0.85) {
+//
+// We return TWO things: the analysis-quality `base64` (large — sent to the model
+// and then discarded), and a tiny `preview` thumbnail (a few KB, for on-screen
+// display only). Keeping the on-screen copy small is what keeps memory flat no
+// matter how many coins pass through the app.
+function fileToResizedBase64(file, maxDim = 1280, quality = 0.85, thumbDim = 256) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("read failed"));
@@ -55,7 +60,18 @@ function fileToResizedBase64(file, maxDim = 1280, quality = 0.85) {
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0, width, height);
         const dataUrl = canvas.toDataURL("image/jpeg", quality);
-        resolve({ base64: dataUrl.split(",")[1], mediaType: "image/jpeg", preview: dataUrl });
+
+        // Small thumbnail for display only — never sent anywhere, never logged.
+        const tScale = Math.min(1, thumbDim / Math.max(width, height));
+        const tw = Math.max(1, Math.round(width * tScale));
+        const th = Math.max(1, Math.round(height * tScale));
+        const thumb = document.createElement("canvas");
+        thumb.width = tw;
+        thumb.height = th;
+        thumb.getContext("2d").drawImage(canvas, 0, 0, tw, th);
+        const preview = thumb.toDataURL("image/jpeg", 0.6);
+
+        resolve({ base64: dataUrl.split(",")[1], mediaType: "image/jpeg", preview });
       };
       img.src = reader.result;
     };
@@ -194,7 +210,7 @@ function AnalyzeTab({ log, setLog, onAuthExpired }) {
 
   const analyze = async () => {
     const images = [front, back]
-      .filter(Boolean)
+      .filter((i) => i && i.base64)
       .map((i) => ({ data: i.base64, mediaType: i.mediaType }));
     if (images.length === 0) return;
     setLoading(true);
@@ -213,6 +229,11 @@ function AnalyzeTab({ log, setLog, onAuthExpired }) {
       if (!r.ok) throw new Error(data.error || "Analysis failed");
       setResult(data);
       setEbayQuery(data.ebay_search_query || data.name || "");
+      // Forget the picture: identification is done, so drop the heavy base64
+      // payloads and keep only the tiny thumbnail for display. This is what
+      // stops memory from piling up photo after photo.
+      setFront((f) => (f ? { ...f, base64: null } : f));
+      setBack((b) => (b ? { ...b, base64: null } : b));
     } catch (e) {
       setError(e.message);
     } finally {
@@ -251,7 +272,9 @@ function AnalyzeTab({ log, setLog, onAuthExpired }) {
       confidence: result.confidence,
       status: "Unchecked",
       notes,
-      preview: front?.preview ?? back?.preview ?? null,
+      // Deliberately no image is stored — the coin is logged by its data and
+      // `id` only, so the collection log stays tiny and never runs the browser
+      // out of memory.
       ebayMedian: ebayData?.median ?? null,
       ebayAvg: ebayData?.avg ?? null,
       ebayCount: ebayData?.count ?? null,
@@ -440,8 +463,8 @@ function LogTab({ log, setLog }) {
   const remove = (id) => setLog(prev => prev.filter(e => e.id !== id));
 
   const exportCSV = () => {
-    const headers = ["Date","Name","Country","Year","Grade","Value Low","Value High","eBay Median","eBay Avg","eBay Sales","Status","Notes"];
-    const rows = log.map(e => [e.date,e.name,e.country,e.year,e.grade,e.valueMin,e.valueMax,e.ebayMedian??'',e.ebayAvg??'',e.ebayCount??'',e.status,`"${(e.notes||'').replace(/"/g,'""')}"`]);
+    const headers = ["Coin ID","Date","Name","Country","Year","Grade","Value Low","Value High","eBay Median","eBay Avg","eBay Sales","Status","Notes"];
+    const rows = log.map(e => [e.id,e.date,e.name,e.country,e.year,e.grade,e.valueMin,e.valueMax,e.ebayMedian??'',e.ebayAvg??'',e.ebayCount??'',e.status,`"${(e.notes||'').replace(/"/g,'""')}"`]);
     const csv = [headers, ...rows].map(r => r.join(",")).join("\n");
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv])); a.download = "coin-collection.csv"; a.click();
   };
@@ -469,6 +492,7 @@ function LogTab({ log, setLog }) {
               <div>
                 <div style={{ fontWeight:700, fontSize:15, color:"#e8e0d0" }}>{e.name}</div>
                 <div style={{ fontSize:12, color:"#666" }}>{e.date} · {e.country} · {e.grade}</div>
+                <div style={{ fontSize:11, color:"#555", marginTop:2 }}>Coin ID: {e.id}</div>
               </div>
               <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
                 <select style={{ background:"#1a1a1a", border:"1px solid #333", borderRadius:6, color: STATUS_COLORS[e.status], fontSize:12, padding:"4px 8px", fontWeight:700 }}
